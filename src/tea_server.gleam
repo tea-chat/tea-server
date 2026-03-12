@@ -1,9 +1,9 @@
 import envoy
 import gleam/erlang/process
 import gleam/http
-import gleam/io
-import gleam/option.{type Option, Some, unwrap}
+import gleam/option.{type Option, unwrap}
 import gleam/result
+import gleam/time/timestamp
 import mist
 import wisp.{type Request, type Response}
 import wisp/wisp_mist
@@ -14,6 +14,7 @@ pub type User {
     id: uuid.Uuid,
     display_name: String,
     username: String,
+    joined: timestamp.Timestamp,
     bio: Option(String),
   )
 }
@@ -29,7 +30,7 @@ pub fn user_to_string(user: User) -> String {
   <> unwrap(user.bio, "")
 }
 
-fn user_handler(req, id) {
+fn user_handler(req: Request, id: String) {
   case req.method {
     http.Get -> get_user_handler(id)
     http.Delete -> delete_user_handler(id)
@@ -37,23 +38,29 @@ fn user_handler(req, id) {
   }
 }
 
-fn delete_user_handler(id) {
+fn delete_user_handler(_id) {
   wisp.no_content()
 }
 
-fn get_user_handler(req) {
-  wisp.string_body(wisp.ok(), "ID")
+fn get_user_handler(id) {
+  wisp.string_body(wisp.ok(), "ID: " <> id)
 }
 
 fn users_handler(req: Request) {
   case req.method {
-    http.Get -> get_users_hander()
-    http.Post -> post_users_hander()
+    http.Get -> get_users_handler()
+    http.Post -> post_users_handler()
     _ -> wisp.method_not_allowed([http.Get, http.Post])
   }
 }
 
-fn get_users_handler()
+fn get_users_handler() {
+  wisp.string_body(wisp.ok(), "penis")
+}
+
+fn post_users_handler() {
+  wisp.created()
+}
 
 fn handler(req: Request) -> Response {
   use req <- middleware(req)
