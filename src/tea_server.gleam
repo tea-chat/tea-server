@@ -1,8 +1,11 @@
 import envoy
+import gleam/dynamic/decode
 import gleam/erlang/process
 import gleam/http
-import gleam/option.{type Option, unwrap}
+import gleam/json
+import gleam/option.{type Option, Some, unwrap}
 import gleam/result
+import gleam/time/calendar
 import gleam/time/timestamp
 import mist
 import wisp.{type Request, type Response}
@@ -19,6 +22,16 @@ pub type User {
   )
 }
 
+fn user_to_json(user: User) {
+  json.object([
+    #("id", json.string(uuid.to_string(user.id))),
+    #("display_name", json.string(user.display_name)),
+    #("username", json.string(user.username)),
+    #("joined", timestamp_to_json(user.joined)),
+    #("bio", json.string(option.unwrap(user.bio, ""))),
+  ])
+}
+
 pub fn user_to_string(user: User) -> String {
   "User: "
   <> user.display_name
@@ -28,6 +41,10 @@ pub fn user_to_string(user: User) -> String {
   <> uuid.to_string(user.id)
   <> " Bio: "
   <> unwrap(user.bio, "")
+}
+
+fn timestamp_to_json(ts: timestamp.Timestamp) {
+  json.string(timestamp.to_rfc3339(ts, calendar.utc_offset))
 }
 
 fn user_handler(req: Request, id: String) {
@@ -49,17 +66,66 @@ fn get_user_handler(id) {
 fn users_handler(req: Request) {
   case req.method {
     http.Get -> get_users_handler()
-    http.Post -> post_users_handler()
+    http.Post -> post_users_handler(req)
     _ -> wisp.method_not_allowed([http.Get, http.Post])
   }
 }
 
 fn get_users_handler() {
-  wisp.string_body(wisp.ok(), "penis")
+  let users = [
+    User(
+      id: uuid.v4(),
+      display_name: "Bob Jones",
+      username: "bobjones225",
+      joined: timestamp.from_unix_seconds(1_766_689_000),
+      bio: Some("Some random guy."),
+    ),
+    User(
+      id: uuid.v4(),
+      display_name: "Other User",
+      username: "otheruser",
+      joined: timestamp.from_unix_seconds(1_766_659_000),
+      bio: Some("Another random guy."),
+    ),
+  ]
+
+  json.array(users, user_to_json)
+  |> json.to_string
+  |> wisp.json_response(200)
 }
 
-fn post_users_handler() {
-  wisp.created()
+fn post_users_handler(req: Request) {
+  use json <- wisp.require_json(req)
+
+  let result = {
+    let decoder = {
+      use display_name <- decode.field("display_name", decode.string)
+      use username <- decode.field("username", decode.string)
+      use bio <- decode.optional_field("bio", "", decode.string)
+      decode.success(#(display_name, username, bio))
+    }
+    use #(display_name, username, bio) <- result.try(decode.run(json, decoder))
+
+    let user =
+      User(
+        id: uuid.v4(),
+        username: username,
+        display_name: display_name,
+        joined: timestamp.from_unix_seconds(1_766_689_000),
+        bio: Some(bio),
+      )
+
+    Ok(
+      user_to_json(user)
+      |> json.to_string
+      |> wisp.json_response(200),
+    )
+  }
+
+  case result {
+    Ok(resp) -> resp
+    Error(_) -> wisp.unprocessable_content()
+  }
 }
 
 fn handler(req: Request) -> Response {

@@ -1,20 +1,7 @@
 # tea_server
+Currently this project is a WIP and learning experience, in the future it hopes to be the api for the tea chat app using postgres as the database.
 
-[![Package Version](https://img.shields.io/hexpm/v/tea_server)](https://hex.pm/packages/tea_server)
-[![Hex Docs](https://img.shields.io/badge/hex-docs-ffaff3)](https://hexdocs.pm/tea_server/)
-
-```sh
-gleam add tea_server@1
-```
-```gleam
-import tea_server
-
-pub fn main() -> Nil {
-  // TODO: An example of the project in use
-}
-```
-
-Further documentation can be found at <https://hexdocs.pm/tea_server>.
+Currently the code for this project is heavily based on [this tutorial](https://blog.andreyfadeev.com/p/gleam-web-application-development-tutorial), but obviously this will change in the future.
 
 ## Development
 
