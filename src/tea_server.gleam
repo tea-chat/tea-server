@@ -8,6 +8,8 @@ import gleam/result
 import gleam/time/calendar
 import gleam/time/timestamp
 import mist
+import pog
+import sql
 import wisp.{type Request, type Response}
 import wisp/wisp_mist
 import youid/uuid
@@ -149,6 +151,27 @@ fn middleware(req: Request, handler: fn(Request) -> Response) -> Response {
 
 pub fn main() -> Nil {
   wisp.configure_logger()
+
+  let db_pool_name = process.new_name("db_pool")
+  let assert Ok(database_url) = envoy.get("DATABASE_URL")
+  let assert Ok(pog_config) = pog.url_config(db_pool_name, database_url)
+  let assert Ok(_) =
+    pog_config
+    |> pog.pool_size(10)
+    |> pog.start
+
+  let con = pog.named_connection(db_pool_name)
+
+  case sql.find_users(con) {
+    Ok(users) -> {
+      echo "Got todo items"
+      echo users
+      echo "OK"
+    }
+    Error(_) -> {
+      echo "Failed to get todo items"
+    }
+  }
 
   let secret =
     result.unwrap(envoy.get("SECRET_KEY_BASE"), "wisp_secret_fallback")
