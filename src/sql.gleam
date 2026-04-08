@@ -140,11 +140,9 @@ pub type InsertUserRow {
 ///
 pub fn insert_user(
   db: pog.Connection,
-  arg_1: Uuid,
+  arg_1: String,
   arg_2: String,
   arg_3: String,
-  arg_4: Timestamp,
-  arg_5: String,
 ) -> Result(pog.Returned(InsertUserRow), pog.QueryError) {
   let decoder = {
     use id <- decode.field(0, uuid_decoder())
@@ -155,16 +153,14 @@ pub fn insert_user(
     decode.success(InsertUserRow(id:, username:, display_name:, joined:, bio:))
   }
 
-  "insert into users (id, username, display_name, joined, bio)
-values ($1, $2, $3, $4, $5)
+  "insert into users (display_name, username, bio)
+values ($1, $2, $3)
 returning *;
 "
   |> pog.query
-  |> pog.parameter(pog.text(uuid.to_string(arg_1)))
+  |> pog.parameter(pog.text(arg_1))
   |> pog.parameter(pog.text(arg_2))
   |> pog.parameter(pog.text(arg_3))
-  |> pog.parameter(pog.timestamp(arg_4))
-  |> pog.parameter(pog.text(arg_5))
   |> pog.returning(decoder)
   |> pog.execute(db)
 }

@@ -2,7 +2,9 @@ import envoy
 import gleam/dynamic/decode
 import gleam/erlang/process
 import gleam/http
+import gleam/io
 import gleam/json
+import gleam/list
 import gleam/option.{type Option, Some, unwrap}
 import gleam/result
 import gleam/time/calendar
@@ -13,6 +15,10 @@ import sql
 import wisp.{type Request, type Response}
 import wisp/wisp_mist
 import youid/uuid
+
+pub type Context {
+  Context(db: pog.Connection)
+}
 
 pub type User {
   User(
@@ -43,85 +49,125 @@ pub fn user_to_string(user: User) -> String {
   <> uuid.to_string(user.id)
   <> " Bio: "
   <> unwrap(user.bio, "")
+  <> ")"
 }
 
 fn timestamp_to_json(ts: timestamp.Timestamp) {
   json.string(timestamp.to_rfc3339(ts, calendar.utc_offset))
 }
 
-fn user_handler(req: Request, id: String) {
+fn user_handler(req: Request, ctx: Context, id: String) {
   case req.method {
-    http.Get -> get_user_handler(id)
-    http.Delete -> delete_user_handler(id)
+    http.Get -> get_user_handler(ctx, id)
+    http.Delete -> delete_user_handler(ctx, id)
     _ -> wisp.method_not_allowed([http.Get, http.Delete])
   }
 }
 
-fn delete_user_handler(_id) {
-  wisp.no_content()
+fn delete_user_handler(ctx: Context, id: String) {
+  case uuid.from_string(id) {
+    Ok(id) -> {
+      case sql.delete_user(ctx.db, id) {
+        Ok(_) -> wisp.no_content()
+        Error(_) -> wisp.internal_server_error()
+      }
+    }
+    Error(_) -> wisp.bad_request("Invalid id")
+  }
 }
 
-fn get_user_handler(id) {
-  wisp.string_body(wisp.ok(), "ID: " <> id)
+fn get_user_handler(ctx: Context, id: String) {
+  case uuid.from_string(id) {
+    Ok(id) -> {
+      case sql.find_user(ctx.db, id) {
+        Ok(user) -> {
+          case user.rows {
+            [] -> wisp.not_found()
+            [row] -> {
+              let user =
+                User(
+                  row.id,
+                  row.display_name,
+                  row.username,
+                  row.joined,
+                  row.bio,
+                )
+
+              user_to_json(user)
+              |> json.to_string
+              |> wisp.json_response(200)
+            }
+            _ -> {
+              wisp.internal_server_error()
+            }
+          }
+        }
+        Error(_) -> wisp.internal_server_error()
+      }
+    }
+    Error(_) -> wisp.bad_request("Invalid id")
+  }
 }
 
-fn users_handler(req: Request) {
+fn users_handler(req: Request, ctx: Context) {
   case req.method {
-    http.Get -> get_users_handler()
-    http.Post -> post_users_handler(req)
+    http.Get -> get_users_handler(ctx)
+    http.Post -> post_users_handler(req, ctx)
     _ -> wisp.method_not_allowed([http.Get, http.Post])
   }
 }
 
-fn get_users_handler() {
-  let users = [
-    User(
-      id: uuid.v4(),
-      display_name: "Bob Jones",
-      username: "bobjones225",
-      joined: timestamp.from_unix_seconds(1_766_689_000),
-      bio: Some("Some random guy."),
-    ),
-    User(
-      id: uuid.v4(),
-      display_name: "Other User",
-      username: "otheruser",
-      joined: timestamp.from_unix_seconds(1_766_659_000),
-      bio: Some("Another random guy."),
-    ),
-  ]
-
-  json.array(users, user_to_json)
-  |> json.to_string
-  |> wisp.json_response(200)
+fn get_users_handler(ctx: Context) {
+  case sql.find_users(ctx.db) {
+    Ok(todo_items) -> {
+      todo_items.rows
+      |> list.map(fn(row: sql.FindUsersRow) {
+        User(row.id, row.display_name, row.username, row.joined, row.bio)
+      })
+      |> json.array(user_to_json)
+      |> json.to_string
+      |> wisp.json_response(200)
+    }
+    Error(_) -> {
+      wisp.internal_server_error()
+    }
+  }
 }
 
-fn post_users_handler(req: Request) {
+fn post_users_handler(req: Request, ctx: Context) {
   use json <- wisp.require_json(req)
 
   let result = {
     let decoder = {
-      use display_name <- decode.field("display_name", decode.string)
       use username <- decode.field("username", decode.string)
+      use display_name <- decode.field("display_name", decode.string)
       use bio <- decode.optional_field("bio", "", decode.string)
-      decode.success(#(display_name, username, bio))
+      decode.success(#(username, display_name, bio))
     }
-    use #(display_name, username, bio) <- result.try(decode.run(json, decoder))
+    use #(username, display_name, bio) <- result.try(decode.run(json, decoder))
 
-    let user =
-      User(
-        id: uuid.v4(),
-        username: username,
-        display_name: display_name,
-        joined: timestamp.from_unix_seconds(1_766_689_000),
-        bio: Some(bio),
-      )
+    case sql.insert_user(ctx.db, username, display_name, bio) {
+      Ok(r) -> {
+        case r.rows {
+          [row] -> {
+            let user =
+              User(row.id, row.display_name, row.username, row.joined, row.bio)
 
-    Ok(
-      user_to_json(user)
-      |> json.to_string
-      |> wisp.json_response(200),
-    )
+            wisp.log_info("User Created! " <> user_to_string(user))
+
+            user
+            |> user_to_json()
+            |> json.to_string
+            |> wisp.json_response(200)
+            |> Ok()
+          }
+          _ -> Ok(wisp.internal_server_error())
+        }
+      }
+      Error(_) -> {
+        Ok(wisp.internal_server_error())
+      }
+    }
   }
 
   case result {
@@ -130,12 +176,12 @@ fn post_users_handler(req: Request) {
   }
 }
 
-fn handler(req: Request) -> Response {
+fn handler(req: Request, ctx: Context) -> Response {
   use req <- middleware(req)
 
   case wisp.path_segments(req) {
-    ["users"] -> users_handler(req)
-    ["users", id] -> user_handler(req, id)
+    ["users"] -> users_handler(req, ctx)
+    ["users", id] -> user_handler(req, ctx, id)
     _ -> wisp.not_found()
   }
 }
@@ -161,17 +207,8 @@ pub fn main() -> Nil {
     |> pog.start
 
   let con = pog.named_connection(db_pool_name)
-
-  case sql.find_users(con) {
-    Ok(users) -> {
-      echo "Got todo items"
-      echo users
-      echo "OK"
-    }
-    Error(_) -> {
-      echo "Failed to get todo items"
-    }
-  }
+  let context = Context(con)
+  let handler = handler(_, context)
 
   let secret =
     result.unwrap(envoy.get("SECRET_KEY_BASE"), "wisp_secret_fallback")
