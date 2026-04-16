@@ -1,5 +1,5 @@
 # tea_server
-Currently this project is a WIP and learning experience, in the future it hopes to be the api for the tea chat app using postgres as the database.
+This project is a WIP and learning experience, in the future it hopes to be the api for the tea chat app using postgres as the database.
 
 Currently the code for this project is heavily based on [this tutorial](https://blog.andreyfadeev.com/p/gleam-web-application-development-tutorial), but this will obviously change in the future.
 

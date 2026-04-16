@@ -1,12 +1,13 @@
+import argus
 import envoy
 import gleam/dynamic/decode
 import gleam/erlang/process
 import gleam/http
-import gleam/io
 import gleam/json
 import gleam/list
-import gleam/option.{type Option, Some, unwrap}
+import gleam/option.{type Option, unwrap}
 import gleam/result
+import gleam/string
 import gleam/time/calendar
 import gleam/time/timestamp
 import mist
@@ -58,7 +59,10 @@ fn timestamp_to_json(ts: timestamp.Timestamp) {
 
 fn user_handler(req: Request, ctx: Context, id: String) {
   case req.method {
-    http.Get -> get_user_handler(ctx, id)
+    http.Get -> {
+      use user_id <- require_auth(req, ctx)
+      get_user_handler(ctx, user_id)
+    }
     http.Delete -> delete_user_handler(ctx, id)
     _ -> wisp.method_not_allowed([http.Get, http.Delete])
   }
@@ -76,36 +80,25 @@ fn delete_user_handler(ctx: Context, id: String) {
   }
 }
 
-fn get_user_handler(ctx: Context, id: String) {
-  case uuid.from_string(id) {
-    Ok(id) -> {
-      case sql.find_user(ctx.db, id) {
-        Ok(user) -> {
-          case user.rows {
-            [] -> wisp.not_found()
-            [row] -> {
-              let user =
-                User(
-                  row.id,
-                  row.display_name,
-                  row.username,
-                  row.joined,
-                  row.bio,
-                )
+fn get_user_handler(ctx: Context, id: uuid.Uuid) {
+  case sql.find_user(ctx.db, id) {
+    Ok(user) -> {
+      case user.rows {
+        [] -> wisp.not_found()
+        [row] -> {
+          let user =
+            User(row.id, row.display_name, row.username, row.joined, row.bio)
 
-              user_to_json(user)
-              |> json.to_string
-              |> wisp.json_response(200)
-            }
-            _ -> {
-              wisp.internal_server_error()
-            }
-          }
+          user_to_json(user)
+          |> json.to_string
+          |> wisp.json_response(200)
         }
-        Error(_) -> wisp.internal_server_error()
+        _ -> {
+          wisp.internal_server_error()
+        }
       }
     }
-    Error(_) -> wisp.bad_request("Invalid id")
+    Error(_) -> wisp.internal_server_error()
   }
 }
 
@@ -119,8 +112,8 @@ fn users_handler(req: Request, ctx: Context) {
 
 fn get_users_handler(ctx: Context) {
   case sql.find_users(ctx.db) {
-    Ok(todo_items) -> {
-      todo_items.rows
+    Ok(users) -> {
+      users.rows
       |> list.map(fn(row: sql.FindUsersRow) {
         User(row.id, row.display_name, row.username, row.joined, row.bio)
       })
@@ -141,38 +134,93 @@ fn post_users_handler(req: Request, ctx: Context) {
     let decoder = {
       use username <- decode.field("username", decode.string)
       use display_name <- decode.field("display_name", decode.string)
+      use email <- decode.field("email", decode.string)
+      use password <- decode.field("password", decode.string)
       use bio <- decode.optional_field("bio", "", decode.string)
-      decode.success(#(username, display_name, bio))
+      decode.success(#(username, display_name, email, password, bio))
     }
-    use #(username, display_name, bio) <- result.try(decode.run(json, decoder))
+    use #(username, display_name, email, password, bio) <- result.try(
+      decode.run(json, decoder),
+    )
 
-    case sql.insert_user(ctx.db, username, display_name, bio) {
-      Ok(r) -> {
-        case r.rows {
-          [row] -> {
-            let user =
-              User(row.id, row.display_name, row.username, row.joined, row.bio)
+    let salt = argus.gen_salt()
 
-            wisp.log_info("User Created! " <> user_to_string(user))
+    case
+      argus.hasher()
+      |> argus.hash(password, salt)
+    {
+      Ok(hashes) -> {
+        let password_hash = hashes.encoded_hash
 
-            user
-            |> user_to_json()
-            |> json.to_string
-            |> wisp.json_response(200)
-            |> Ok()
+        case
+          sql.insert_user(
+            ctx.db,
+            username,
+            display_name,
+            email,
+            password_hash,
+            salt,
+            bio,
+          )
+        {
+          Ok(r) -> {
+            case r.rows {
+              [row] -> {
+                let user =
+                  User(
+                    row.id,
+                    row.display_name,
+                    row.username,
+                    row.joined,
+                    row.bio,
+                  )
+
+                wisp.log_info("User Created! " <> user_to_string(user))
+
+                user
+                |> user_to_json()
+                |> json.to_string
+                |> wisp.json_response(200)
+                |> Ok()
+              }
+              _ -> Ok(wisp.internal_server_error())
+            }
           }
-          _ -> Ok(wisp.internal_server_error())
+          Error(_) -> Ok(wisp.internal_server_error())
         }
       }
-      Error(_) -> {
-        Ok(wisp.internal_server_error())
-      }
+      Error(_) -> Ok(wisp.internal_server_error())
     }
   }
 
   case result {
     Ok(resp) -> resp
     Error(_) -> wisp.unprocessable_content()
+  }
+}
+
+fn login_handler(req: Request, ctx: Context) -> Response {
+  todo
+}
+
+fn require_auth(req: Request, ctx: Context, handler: fn(uuid.Uuid) -> Response) {
+  case list.key_find(req.headers, "authorization") {
+    Ok(auth_header) -> {
+      case string.split_once(auth_header, "Bearer ") {
+        Ok(#("", token)) -> {
+          case sql.find_user_by_token(ctx.db, token) {
+            Ok(result) ->
+              case result.rows {
+                [row] -> handler(row.user_id)
+                _ -> wisp.response(401)
+              }
+            Error(_) -> wisp.internal_server_error()
+          }
+        }
+        _ -> wisp.response(401)
+      }
+    }
+    Error(_) -> wisp.response(401)
   }
 }
 

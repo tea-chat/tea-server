@@ -66,11 +66,87 @@ pub fn find_user(
     decode.success(FindUserRow(id:, username:, display_name:, joined:, bio:))
   }
 
-  "select * from users
+  "select id, username, display_name, joined, bio from users
 where id = $1;
 "
   |> pog.query
   |> pog.parameter(pog.text(uuid.to_string(arg_1)))
+  |> pog.returning(decoder)
+  |> pog.execute(db)
+}
+
+/// A row you get from running the `find_user_by_email` query
+/// defined in `./src/sql/find_user_by_email.sql`.
+///
+/// > 🐿️ This type definition was generated automatically using v4.6.0 of the
+/// > [squirrel package](https://github.com/giacomocavalieri/squirrel).
+///
+pub type FindUserByEmailRow {
+  FindUserByEmailRow(
+    id: Uuid,
+    email: String,
+    password_hash: String,
+    salt: String,
+  )
+}
+
+/// Runs the `find_user_by_email` query
+/// defined in `./src/sql/find_user_by_email.sql`.
+///
+/// > 🐿️ This function was generated automatically using v4.6.0 of
+/// > the [squirrel package](https://github.com/giacomocavalieri/squirrel).
+///
+pub fn find_user_by_email(
+  db: pog.Connection,
+  arg_1: String,
+) -> Result(pog.Returned(FindUserByEmailRow), pog.QueryError) {
+  let decoder = {
+    use id <- decode.field(0, uuid_decoder())
+    use email <- decode.field(1, decode.string)
+    use password_hash <- decode.field(2, decode.string)
+    use salt <- decode.field(3, decode.string)
+    decode.success(FindUserByEmailRow(id:, email:, password_hash:, salt:))
+  }
+
+  "select id, email, password_hash, salt from users
+where email = $1;
+"
+  |> pog.query
+  |> pog.parameter(pog.text(arg_1))
+  |> pog.returning(decoder)
+  |> pog.execute(db)
+}
+
+/// A row you get from running the `find_user_by_token` query
+/// defined in `./src/sql/find_user_by_token.sql`.
+///
+/// > 🐿️ This type definition was generated automatically using v4.6.0 of the
+/// > [squirrel package](https://github.com/giacomocavalieri/squirrel).
+///
+pub type FindUserByTokenRow {
+  FindUserByTokenRow(user_id: Uuid)
+}
+
+/// Runs the `find_user_by_token` query
+/// defined in `./src/sql/find_user_by_token.sql`.
+///
+/// > 🐿️ This function was generated automatically using v4.6.0 of
+/// > the [squirrel package](https://github.com/giacomocavalieri/squirrel).
+///
+pub fn find_user_by_token(
+  db: pog.Connection,
+  arg_1: String,
+) -> Result(pog.Returned(FindUserByTokenRow), pog.QueryError) {
+  let decoder = {
+    use user_id <- decode.field(0, uuid_decoder())
+    decode.success(FindUserByTokenRow(user_id:))
+  }
+
+  "select user_id from tokens
+where token = $1;
+"
+  |> pog.query
+  |> pog.parameter(pog.text(arg_1))
   |> pog.returning(decoder)
   |> pog.execute(db)
 }
@@ -109,7 +185,7 @@ pub fn find_users(
     decode.success(FindUsersRow(id:, username:, display_name:, joined:, bio:))
   }
 
-  "select * from users;
+  "select id, username, display_name, joined, bio from users;
 "
   |> pog.query
   |> pog.returning(decoder)
@@ -143,6 +219,9 @@ pub fn insert_user(
   arg_1: String,
   arg_2: String,
   arg_3: String,
+  arg_4: String,
+  arg_5: String,
+  arg_6: String,
 ) -> Result(pog.Returned(InsertUserRow), pog.QueryError) {
   let decoder = {
     use id <- decode.field(0, uuid_decoder())
@@ -153,14 +232,17 @@ pub fn insert_user(
     decode.success(InsertUserRow(id:, username:, display_name:, joined:, bio:))
   }
 
-  "insert into users (display_name, username, bio)
-values ($1, $2, $3)
-returning *;
+  "insert into users (username, display_name, email, password_hash, salt, bio)
+values ($1, $2, $3, $4, $5, $6)
+returning id, username, display_name, joined, bio;
 "
   |> pog.query
   |> pog.parameter(pog.text(arg_1))
   |> pog.parameter(pog.text(arg_2))
   |> pog.parameter(pog.text(arg_3))
+  |> pog.parameter(pog.text(arg_4))
+  |> pog.parameter(pog.text(arg_5))
+  |> pog.parameter(pog.text(arg_6))
   |> pog.returning(decoder)
   |> pog.execute(db)
 }
