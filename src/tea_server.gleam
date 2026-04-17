@@ -1,5 +1,7 @@
 import argus
 import envoy
+import gleam/bit_array
+import gleam/crypto
 import gleam/dynamic/decode
 import gleam/erlang/process
 import gleam/http
@@ -60,30 +62,41 @@ fn timestamp_to_json(ts: timestamp.Timestamp) {
   json.string(timestamp.to_rfc3339(ts, calendar.utc_offset))
 }
 
-fn user_handler(req: Request, ctx: Context, id: String) {
+fn me_handler(req: Request, ctx: Context) {
   case req.method {
     http.Get -> {
       use user_id <- require_auth(req, ctx)
-      get_user_handler(ctx, user_id)
+      get_user_handler(ctx, user_id, user_id)
     }
-    http.Delete -> delete_user_handler(ctx, id)
+    http.Delete -> {
+      use user_id <- require_auth(req, ctx)
+      delete_user_handler(ctx, user_id)
+    }
     _ -> wisp.method_not_allowed([http.Get, http.Delete])
   }
 }
 
-fn delete_user_handler(ctx: Context, id: String) {
-  case uuid.from_string(id) {
-    Ok(id) -> {
-      case sql.delete_user(ctx.db, id) {
-        Ok(_) -> wisp.no_content()
-        Error(_) -> wisp.internal_server_error()
+fn user_handler(req: Request, ctx: Context, id: String) {
+  case req.method {
+    http.Get -> {
+      use user_id <- require_auth(req, ctx)
+      case uuid.from_string(id) {
+        Ok(id) -> get_user_handler(ctx, id, user_id)
+        Error(_) -> wisp.bad_request("Invalid id")
       }
     }
-    Error(_) -> wisp.bad_request("Invalid id")
+    _ -> wisp.method_not_allowed([http.Get])
   }
 }
 
-fn get_user_handler(ctx: Context, id: uuid.Uuid) {
+fn delete_user_handler(ctx: Context, id: uuid.Uuid) {
+  case sql.delete_user(ctx.db, id) {
+    Ok(_) -> wisp.no_content()
+    Error(_) -> wisp.internal_server_error()
+  }
+}
+
+fn get_user_handler(ctx: Context, id: uuid.Uuid, _user_id: uuid.Uuid) {
   case sql.find_user(ctx.db, id) {
     Ok(user) -> {
       case user.rows {
@@ -207,9 +220,13 @@ fn login_handler(req: Request, ctx: Context) {
         let decoder = {
           use email <- decode.field("email", decode.string)
           use password <- decode.field("password", decode.string)
-          decode.success(#(email, password))
+          use challenge <- decode.field("challenge", decode.string)
+          decode.success(#(email, password, challenge))
         }
-        use #(email, password) <- result.try(decode.run(json, decoder))
+        use #(email, password, challenge) <- result.try(decode.run(
+          json,
+          decoder,
+        ))
 
         case sql.find_user_by_email(ctx.db, email) {
           Ok(user) -> {
@@ -221,10 +238,54 @@ fn login_handler(req: Request, ctx: Context) {
                 case argus.verify(userauth.password_hash, password) {
                   Ok(bool) -> {
                     case bool {
-                      True ->
-                        wisp.response(200)
-                        |> wisp.set_body(wisp.Text("Here is your token :P"))
-                        |> Ok()
+                      True -> {
+                        // generate auth code
+                        let auth_code =
+                          crypto.strong_random_bytes(128)
+                          |> bit_array.base64_url_encode(True)
+                        let code_hash =
+                          bit_array.from_string(auth_code)
+                          |> crypto.hash(crypto.Sha256, _)
+                          |> bit_array.base16_encode()
+                        // store hashed in table with challenge\
+                        case
+                          sql.insert_auth_code(
+                            ctx.db,
+                            code_hash,
+                            userauth.id,
+                            challenge,
+                            "S256",
+                          )
+                        {
+                          Ok(r) -> {
+                            // send back auth code and expiry
+                            case r.rows {
+                              [row] -> {
+                                let json =
+                                  json.object([
+                                    #(
+                                      "id",
+                                      json.string(uuid.to_string(row.user_id)),
+                                    ),
+                                    #("code", json.string(auth_code)),
+                                    #(
+                                      "expires_at",
+                                      json.float(timestamp.to_unix_seconds(
+                                        row.expires_at,
+                                      )),
+                                    ),
+                                  ])
+
+                                wisp.response(200)
+                                |> wisp.json_body(json.to_string(json))
+                                |> Ok()
+                              }
+                              _ -> Ok(wisp.internal_server_error())
+                            }
+                          }
+                          Error(_) -> Ok(wisp.internal_server_error())
+                        }
+                      }
                       False ->
                         wisp.response(401)
                         |> wisp.set_body(wisp.Text("Invalid password"))
@@ -249,6 +310,13 @@ fn login_handler(req: Request, ctx: Context) {
     _ -> wisp.method_not_allowed([http.Post])
   }
 }
+
+// fn code_exchange_handler(req: Request, ctx: Context) {
+//   // verify challenge
+//   // generate token
+//   // return token and expiry
+//   todo
+// }
 
 fn require_auth(req: Request, ctx: Context, handler: fn(uuid.Uuid) -> Response) {
   case list.key_find(req.headers, "authorization") {
@@ -277,6 +345,7 @@ fn handler(req: Request, ctx: Context) -> Response {
   case wisp.path_segments(req) {
     ["users"] -> users_handler(req, ctx)
     ["users", id] -> user_handler(req, ctx, id)
+    ["me"] -> me_handler(req, ctx)
     ["login"] -> login_handler(req, ctx)
     _ -> wisp.not_found()
   }

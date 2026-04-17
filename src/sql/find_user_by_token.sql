@@ -1,2 +1,2 @@
-select user_id from tokens
-where token = $1;
+select user_id from sessions
+where token_hash = $1;

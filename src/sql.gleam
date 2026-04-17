@@ -136,8 +136,8 @@ pub fn find_user_by_token(
     decode.success(FindUserByTokenRow(user_id:))
   }
 
-  "select user_id from tokens
-where token = $1;
+  "select user_id from sessions
+where token_hash = $1;
 "
   |> pog.query
   |> pog.parameter(pog.text(arg_1))
@@ -182,6 +182,48 @@ pub fn find_users(
   "select id, username, display_name, joined, bio from users;
 "
   |> pog.query
+  |> pog.returning(decoder)
+  |> pog.execute(db)
+}
+
+/// A row you get from running the `insert_auth_code` query
+/// defined in `./src/sql/insert_auth_code.sql`.
+///
+/// > 🐿️ This type definition was generated automatically using v4.6.0 of the
+/// > [squirrel package](https://github.com/giacomocavalieri/squirrel).
+///
+pub type InsertAuthCodeRow {
+  InsertAuthCodeRow(user_id: Uuid, expires_at: Timestamp)
+}
+
+/// Runs the `insert_auth_code` query
+/// defined in `./src/sql/insert_auth_code.sql`.
+///
+/// > 🐿️ This function was generated automatically using v4.6.0 of
+/// > the [squirrel package](https://github.com/giacomocavalieri/squirrel).
+///
+pub fn insert_auth_code(
+  db: pog.Connection,
+  arg_1: String,
+  arg_2: Uuid,
+  arg_3: String,
+  arg_4: String,
+) -> Result(pog.Returned(InsertAuthCodeRow), pog.QueryError) {
+  let decoder = {
+    use user_id <- decode.field(0, uuid_decoder())
+    use expires_at <- decode.field(1, pog.timestamp_decoder())
+    decode.success(InsertAuthCodeRow(user_id:, expires_at:))
+  }
+
+  "insert into auth_codes (code_hash, user_id, code_challenge, code_challenge_method)
+values ($1, $2, $3, $4)
+returning user_id, expires_at;
+"
+  |> pog.query
+  |> pog.parameter(pog.text(arg_1))
+  |> pog.parameter(pog.text(uuid.to_string(arg_2)))
+  |> pog.parameter(pog.text(arg_3))
+  |> pog.parameter(pog.text(arg_4))
   |> pog.returning(decoder)
   |> pog.execute(db)
 }
