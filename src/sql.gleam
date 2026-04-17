@@ -82,12 +82,7 @@ where id = $1;
 /// > [squirrel package](https://github.com/giacomocavalieri/squirrel).
 ///
 pub type FindUserByEmailRow {
-  FindUserByEmailRow(
-    id: Uuid,
-    email: String,
-    password_hash: String,
-    salt: String,
-  )
+  FindUserByEmailRow(id: Uuid, email: String, password_hash: String)
 }
 
 /// Runs the `find_user_by_email` query
@@ -104,11 +99,10 @@ pub fn find_user_by_email(
     use id <- decode.field(0, uuid_decoder())
     use email <- decode.field(1, decode.string)
     use password_hash <- decode.field(2, decode.string)
-    use salt <- decode.field(3, decode.string)
-    decode.success(FindUserByEmailRow(id:, email:, password_hash:, salt:))
+    decode.success(FindUserByEmailRow(id:, email:, password_hash:))
   }
 
-  "select id, email, password_hash, salt from users
+  "select id, email, password_hash from users
 where email = $1;
 "
   |> pog.query
@@ -221,7 +215,6 @@ pub fn insert_user(
   arg_3: String,
   arg_4: String,
   arg_5: String,
-  arg_6: String,
 ) -> Result(pog.Returned(InsertUserRow), pog.QueryError) {
   let decoder = {
     use id <- decode.field(0, uuid_decoder())
@@ -232,8 +225,8 @@ pub fn insert_user(
     decode.success(InsertUserRow(id:, username:, display_name:, joined:, bio:))
   }
 
-  "insert into users (username, display_name, email, password_hash, salt, bio)
-values ($1, $2, $3, $4, $5, $6)
+  "insert into users (username, display_name, email, password_hash, bio)
+values ($1, $2, $3, $4, $5)
 returning id, username, display_name, joined, bio;
 "
   |> pog.query
@@ -242,7 +235,6 @@ returning id, username, display_name, joined, bio;
   |> pog.parameter(pog.text(arg_3))
   |> pog.parameter(pog.text(arg_4))
   |> pog.parameter(pog.text(arg_5))
-  |> pog.parameter(pog.text(arg_6))
   |> pog.returning(decoder)
   |> pog.execute(db)
 }

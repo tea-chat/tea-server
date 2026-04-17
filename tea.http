@@ -1,0 +1,24 @@
+# @global base_url http://localhost:8080
+
+### Create User
+# @name CreateUser
+POST {{base_url}}/users
+Content-Type: application/json
+
+{
+    "username": "testuser",
+    "display_name": "testname",
+    "email": "example@email.com",
+    "password": "password",
+    "bio": "This is a test bio!"
+}
+
+### Login
+# @name Login
+POST {{base_url}}/login
+Content-Type: application/json
+
+{
+    "email": "example@email.com",
+    "password": "password"
+}

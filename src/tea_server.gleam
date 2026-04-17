@@ -31,6 +31,10 @@ pub type User {
   )
 }
 
+pub type UserAuth {
+  UserAuth(id: uuid.Uuid, email: String, password_hash: String)
+}
+
 fn user_to_json(user: User) {
   json.object([
     #("id", json.string(uuid.to_string(user.id))),
@@ -46,11 +50,10 @@ pub fn user_to_string(user: User) -> String {
   <> user.display_name
   <> " (@"
   <> user.username
-  <> " ID: "
+  <> ") ID: "
   <> uuid.to_string(user.id)
   <> " Bio: "
   <> unwrap(user.bio, "")
-  <> ")"
 }
 
 fn timestamp_to_json(ts: timestamp.Timestamp) {
@@ -93,9 +96,7 @@ fn get_user_handler(ctx: Context, id: uuid.Uuid) {
           |> json.to_string
           |> wisp.json_response(200)
         }
-        _ -> {
-          wisp.internal_server_error()
-        }
+        _ -> wisp.internal_server_error()
       }
     }
     Error(_) -> wisp.internal_server_error()
@@ -159,7 +160,6 @@ fn post_users_handler(req: Request, ctx: Context) {
             display_name,
             email,
             password_hash,
-            salt,
             bio,
           )
         {
@@ -177,8 +177,7 @@ fn post_users_handler(req: Request, ctx: Context) {
 
                 wisp.log_info("User Created! " <> user_to_string(user))
 
-                user
-                |> user_to_json()
+                user_to_json(user)
                 |> json.to_string
                 |> wisp.json_response(200)
                 |> Ok()
@@ -199,8 +198,56 @@ fn post_users_handler(req: Request, ctx: Context) {
   }
 }
 
-fn login_handler(req: Request, ctx: Context) -> Response {
-  todo
+fn login_handler(req: Request, ctx: Context) {
+  case req.method {
+    http.Post -> {
+      use json <- wisp.require_json(req)
+
+      let result = {
+        let decoder = {
+          use email <- decode.field("email", decode.string)
+          use password <- decode.field("password", decode.string)
+          decode.success(#(email, password))
+        }
+        use #(email, password) <- result.try(decode.run(json, decoder))
+
+        case sql.find_user_by_email(ctx.db, email) {
+          Ok(user) -> {
+            case user.rows {
+              [] -> Ok(wisp.not_found())
+              [row] -> {
+                let userauth = UserAuth(row.id, row.email, row.password_hash)
+
+                case argus.verify(userauth.password_hash, password) {
+                  Ok(bool) -> {
+                    case bool {
+                      True ->
+                        wisp.response(200)
+                        |> wisp.set_body(wisp.Text("Here is your token :P"))
+                        |> Ok()
+                      False ->
+                        wisp.response(401)
+                        |> wisp.set_body(wisp.Text("Invalid password"))
+                        |> Ok()
+                    }
+                  }
+                  Error(_) -> Ok(wisp.internal_server_error())
+                }
+              }
+              _ -> Ok(wisp.internal_server_error())
+            }
+          }
+          Error(_) -> Ok(wisp.internal_server_error())
+        }
+      }
+
+      case result {
+        Ok(resp) -> resp
+        Error(_) -> wisp.unprocessable_content()
+      }
+    }
+    _ -> wisp.method_not_allowed([http.Post])
+  }
 }
 
 fn require_auth(req: Request, ctx: Context, handler: fn(uuid.Uuid) -> Response) {
@@ -230,6 +277,7 @@ fn handler(req: Request, ctx: Context) -> Response {
   case wisp.path_segments(req) {
     ["users"] -> users_handler(req, ctx)
     ["users", id] -> user_handler(req, ctx, id)
+    ["login"] -> login_handler(req, ctx)
     _ -> wisp.not_found()
   }
 }

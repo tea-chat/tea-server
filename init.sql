@@ -4,7 +4,6 @@ CREATE TABLE users (
     display_name TEXT NOT NULL,
     email TEXT NOT NULL UNIQUE,
     password_hash TEXT NOT NULL,
-    salt TEXT NOT NULL,
     joined TIMESTAMP NOT NULL DEFAULT now(),
     bio TEXT
 );
