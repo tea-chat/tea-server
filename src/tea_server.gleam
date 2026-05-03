@@ -1,6 +1,8 @@
 import argus
+import dot_env as dot
 import envoy
 import gleam/bit_array
+import gleam/bool
 import gleam/crypto
 import gleam/dynamic/decode
 import gleam/erlang/process
@@ -211,7 +213,7 @@ fn post_users_handler(req: Request, ctx: Context) {
   }
 }
 
-fn login_handler(req: Request, ctx: Context) {
+fn login_handler(req: Request, ctx: Context) -> Response {
   case req.method {
     http.Post -> {
       use json <- wisp.require_json(req)
@@ -223,88 +225,73 @@ fn login_handler(req: Request, ctx: Context) {
           use challenge <- decode.field("challenge", decode.string)
           decode.success(#(email, password, challenge))
         }
-        use #(email, password, challenge) <- result.try(decode.run(
-          json,
-          decoder,
-        ))
 
-        case sql.find_user_by_email(ctx.db, email) {
-          Ok(user) -> {
-            case user.rows {
-              [] -> Ok(wisp.not_found())
-              [row] -> {
-                let userauth = UserAuth(row.id, row.email, row.password_hash)
+        use #(email, password, challenge) <- result.try(
+          decode.run(json, decoder)
+          |> result.map_error(fn(_) { wisp.unprocessable_content() }),
+        )
 
-                case argus.verify(userauth.password_hash, password) {
-                  Ok(bool) -> {
-                    case bool {
-                      True -> {
-                        // generate auth code
-                        let auth_code =
-                          crypto.strong_random_bytes(128)
-                          |> bit_array.base64_url_encode(True)
-                        let code_hash =
-                          bit_array.from_string(auth_code)
-                          |> crypto.hash(crypto.Sha256, _)
-                          |> bit_array.base16_encode()
-                        // store hashed in table with challenge\
-                        case
-                          sql.insert_auth_code(
-                            ctx.db,
-                            code_hash,
-                            userauth.id,
-                            challenge,
-                            "S256",
-                          )
-                        {
-                          Ok(r) -> {
-                            // send back auth code and expiry
-                            case r.rows {
-                              [row] -> {
-                                let json =
-                                  json.object([
-                                    #(
-                                      "id",
-                                      json.string(uuid.to_string(row.user_id)),
-                                    ),
-                                    #("code", json.string(auth_code)),
-                                    #(
-                                      "expires_at",
-                                      json.float(timestamp.to_unix_seconds(
-                                        row.expires_at,
-                                      )),
-                                    ),
-                                  ])
+        use user <- result.try(
+          sql.find_user_by_email(ctx.db, email)
+          |> result.map_error(fn(_) { wisp.internal_server_error() }),
+        )
+        use row <- result.try(case user.rows {
+          [row] -> Ok(row)
+          _ -> Error(wisp.internal_server_error())
+        })
 
-                                wisp.response(200)
-                                |> wisp.json_body(json.to_string(json))
-                                |> Ok()
-                              }
-                              _ -> Ok(wisp.internal_server_error())
-                            }
-                          }
-                          Error(_) -> Ok(wisp.internal_server_error())
-                        }
-                      }
-                      False ->
-                        wisp.response(401)
-                        |> wisp.set_body(wisp.Text("Invalid password"))
-                        |> Ok()
-                    }
-                  }
-                  Error(_) -> Ok(wisp.internal_server_error())
-                }
-              }
-              _ -> Ok(wisp.internal_server_error())
-            }
-          }
-          Error(_) -> Ok(wisp.internal_server_error())
-        }
+        let userauth = UserAuth(row.id, row.email, row.password_hash)
+
+        use valid <- result.try(
+          argus.verify(userauth.password_hash, password)
+          |> result.map_error(fn(_) { wisp.internal_server_error() }),
+        )
+        use <- bool.guard(
+          when: !valid,
+          return: Error(
+            wisp.response(401) |> wisp.set_body(wisp.Text("Invalid password")),
+          ),
+        )
+        let auth_code =
+          crypto.strong_random_bytes(128) |> bit_array.base64_url_encode(True)
+        let code_hash =
+          bit_array.from_string(auth_code)
+          |> crypto.hash(crypto.Sha256, _)
+          |> bit_array.base16_encode()
+
+        use inserted <- result.try(
+          sql.insert_auth_code(
+            ctx.db,
+            code_hash,
+            userauth.id,
+            challenge,
+            "S256",
+          )
+          |> result.map_error(fn(_) { wisp.internal_server_error() }),
+        )
+        use row <- result.try(case inserted.rows {
+          [row] -> Ok(row)
+          _ -> Error(wisp.internal_server_error())
+        })
+
+        let body =
+          json.object([
+            #("id", json.string(uuid.to_string(row.user_id))),
+            #("code", json.string(auth_code)),
+            #(
+              "expires_at",
+              json.float(timestamp.to_unix_seconds(row.expires_at)),
+            ),
+          ])
+
+        wisp.response(200)
+        |> wisp.json_body(json.to_string(body))
+        |> Ok()
       }
 
       case result {
         Ok(resp) -> resp
-        Error(_) -> wisp.unprocessable_content()
+        Error(resp) -> resp
       }
     }
     _ -> wisp.method_not_allowed([http.Post])
@@ -363,6 +350,7 @@ fn middleware(req: Request, handler: fn(Request) -> Response) -> Response {
 pub fn main() -> Nil {
   wisp.configure_logger()
 
+  dot.new() |> dot.set_debug(False) |> dot.load
   let db_pool_name = process.new_name("db_pool")
   let assert Ok(database_url) = envoy.get("DATABASE_URL")
   let assert Ok(pog_config) = pog.url_config(db_pool_name, database_url)
