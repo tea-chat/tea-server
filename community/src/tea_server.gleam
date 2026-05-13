@@ -225,7 +225,6 @@ fn login_handler(req: Request, ctx: Context) -> Response {
           use challenge <- decode.field("challenge", decode.string)
           decode.success(#(email, password, challenge))
         }
-
         use #(email, password, challenge) <- result.try(
           decode.run(json, decoder)
           |> result.map_error(fn(_) { wisp.unprocessable_content() }),
@@ -235,6 +234,8 @@ fn login_handler(req: Request, ctx: Context) -> Response {
           sql.find_user_by_email(ctx.db, email)
           |> result.map_error(fn(_) { wisp.internal_server_error() }),
         )
+
+        // make sure there is only one row
         use row <- result.try(case user.rows {
           [row] -> Ok(row)
           _ -> Error(wisp.internal_server_error())
@@ -242,16 +243,20 @@ fn login_handler(req: Request, ctx: Context) -> Response {
 
         let userauth = UserAuth(row.id, row.email, row.password_hash)
 
+        // check password
         use valid <- result.try(
           argus.verify(userauth.password_hash, password)
           |> result.map_error(fn(_) { wisp.internal_server_error() }),
         )
+
+        // send the reaper after them if it was invalid
         use <- bool.guard(
           when: !valid,
           return: Error(
             wisp.response(401) |> wisp.set_body(wisp.Text("Invalid password")),
           ),
         )
+
         let auth_code =
           crypto.strong_random_bytes(128) |> bit_array.base64_url_encode(True)
         let code_hash =
@@ -269,6 +274,8 @@ fn login_handler(req: Request, ctx: Context) -> Response {
           )
           |> result.map_error(fn(_) { wisp.internal_server_error() }),
         )
+
+        // make sure something isnt fishy
         use row <- result.try(case inserted.rows {
           [row] -> Ok(row)
           _ -> Error(wisp.internal_server_error())
@@ -298,6 +305,7 @@ fn login_handler(req: Request, ctx: Context) -> Response {
   }
 }
 
+// TODO
 // fn code_exchange_handler(req: Request, ctx: Context) {
 //   // verify challenge
 //   // generate token
@@ -310,7 +318,11 @@ fn require_auth(req: Request, ctx: Context, handler: fn(uuid.Uuid) -> Response) 
     Ok(auth_header) -> {
       case string.split_once(auth_header, "Bearer ") {
         Ok(#("", token)) -> {
-          case sql.find_user_by_token(ctx.db, token) {
+          let token_hash =
+            bit_array.from_string(token)
+            |> crypto.hash(crypto.Sha256, _)
+            |> bit_array.base16_encode()
+          case sql.find_user_by_token(ctx.db, token_hash) {
             Ok(result) ->
               case result.rows {
                 [row] -> handler(row.user_id)
